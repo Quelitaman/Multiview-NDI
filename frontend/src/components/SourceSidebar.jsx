@@ -58,6 +58,21 @@ export default function SourceSidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto thin-scroll p-3 space-y-2">
+        {sources.length > 0 && sources.every((s) => s.is_demo) && (
+          <div
+            className="mb-1 p-3 rounded-md border border-[#FF9500]/40 bg-[#FF9500]/[0.08]"
+            data-testid="demo-only-banner"
+          >
+            <div className="text-[11px] font-condensed uppercase tracking-widest text-[#FFB454] font-bold">
+              Modo Demo
+            </div>
+            <div className="text-[11px] text-neutral-300 mt-1 leading-snug">
+              Este entorno no ve tu LAN — mDNS multicast está bloqueado. Ejecuta el
+              backend en tu servidor Windows para detectar las fuentes NDI reales.
+              Ver <span className="font-mono text-neutral-100">WINDOWS_DEPLOY.md</span>.
+            </div>
+          </div>
+        )}
         {filtered.length === 0 && (
           <div className="text-center text-neutral-500 text-xs py-8">
             {sources.length === 0
