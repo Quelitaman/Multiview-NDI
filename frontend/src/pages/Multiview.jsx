@@ -7,7 +7,7 @@ import Toolbar from "@/components/Toolbar";
 import SourceSidebar from "@/components/SourceSidebar";
 import VideoTile from "@/components/VideoTile";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
 
 const uid = () => Math.random().toString(36).slice(2, 10);

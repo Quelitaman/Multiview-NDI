@@ -30,7 +30,12 @@ Push-Location "$Root\frontend"
 if (-not (Test-Path "node_modules")) {
     yarn install --frozen-lockfile
 }
-$env:REACT_APP_BACKEND_URL = ""   # same-origin when served by FastAPI
+# Force same-origin in the packaged build (both API + SPA served by
+# NdiMultiview.exe on the same host:port). This overrides any preview URL
+# that may be sitting in frontend\.env.
+"REACT_APP_BACKEND_URL=" | Out-File -Encoding ascii -Force ".env.production.local"
+$env:REACT_APP_BACKEND_URL = ""
+if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
 yarn build
 Pop-Location
 
