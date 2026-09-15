@@ -1,0 +1,12 @@
+# Minimal runtime dependencies for the packaged NdiMultiview.exe.
+# Avoids the heavy dev/test/AWS stack in requirements.txt.
+fastapi==0.110.1
+uvicorn==0.25.0
+starlette>=0.36
+python-dotenv>=1.0.1
+pydantic>=2.6.4
+python-multipart>=0.0.9
+Pillow>=10.0.0
+numpy>=1.26.0
+cyndilib==0.1.1
+pyinstaller==6.22.3

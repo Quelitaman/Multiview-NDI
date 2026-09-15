@@ -1,117 +1,121 @@
-# Despliegue en Windows — NDI Multiview
+# NDI Multiview — Ejecutable para Windows
 
-> **Importante**: NDI descubre fuentes por **mDNS multicast (UDP 5353)** en la subred local.
-> Para que la app detecte tus fuentes reales, el backend **debe correr en un equipo Windows
-> conectado a la misma red que las fuentes NDI** (o llegar a ellas vía NDI Discovery Server).
-> El preview en la nube nunca verá fuentes de tu LAN — solo mostrará las 6 fuentes DEMO.
+> Para ver **fuentes NDI reales**, el `.exe` debe correr **dentro de la LAN** donde
+> están las fuentes (mDNS/UDP 5353). El preview en la nube nunca las verá.
+
+## Contenido
+
+- `build_windows.ps1` — script que compila el `.exe`
+- `backend/launcher.py` — punto de entrada del ejecutable
+- `backend/NdiMultiview.spec` — configuración PyInstaller
+- `backend/requirements-exe.txt` — dependencias mínimas de runtime
+- `backend/layout_store.py` — almacenamiento de layouts en JSON local
+  (`%APPDATA%\NdiMultiview\layouts.json`) — **sin MongoDB**
 
 ---
 
-## 1. Requisitos
+## Uso rápido (VM Windows)
 
-- Windows 10 / 11 o Windows Server 2019+
-- **NDI 5/6 Runtime** instalado — <https://ndi.video/tools/> → *NDI Tools* (incluye el runtime).
-- Python 3.11 (64-bit) — <https://www.python.org/downloads/windows/>
-- Node.js 20 + Yarn (`npm i -g yarn`)
-- MongoDB Community — <https://www.mongodb.com/try/download/community> (o usa un Mongo remoto/Atlas)
+### 1. Requisitos (una sola vez en la VM que compila)
 
-## 2. Clonar / copiar el proyecto
+- **Python 3.11 x64** — <https://www.python.org/downloads/windows/> (marca *Add to PATH*)
+- **Node.js 20** + Yarn (`npm i -g yarn`)
+- **NDI 6 Runtime** — <https://ndi.video/tools> (instala *NDI Tools*)
+  Aporta `Processing.NDI.Lib.x64.dll` en el PATH, necesario en tiempo de ejecución.
 
-```powershell
-git clone <tu-repo-o-copia-el-zip>
-cd nombre-del-proyecto
-```
+### 2. Compilar el ejecutable
 
-## 3. Backend (FastAPI + cyndilib)
+Desde la raíz del proyecto en PowerShell:
 
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-pip install cyndilib pillow
+.\build_windows.ps1
 ```
 
-Crear/editar `backend\.env`:
+Al terminar tendrás:
 
 ```
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=ndi_multiview
-CORS_ORIGINS=*
+backend\dist\NdiMultiview.exe    (~ 60–90 MB)
 ```
 
-Levantar el servicio:
+### 3. Desplegar en la VM final
+
+En cualquier VM Windows con **NDI Runtime** instalado:
+
+1. Copia `NdiMultiview.exe` a una carpeta (por ejemplo `C:\NDI\`).
+2. Doble clic. Se abrirá una consola con:
+
+   ```
+   ============================================================
+    NDI MULTIVIEW
+   ============================================================
+     URL      : http://localhost:8001
+     API      : http://localhost:8001/api
+     Data dir : C:\Users\...\AppData\Roaming\NdiMultiview
+   ============================================================
+   ```
+
+3. El navegador predeterminado se abrirá solo. Otros equipos de la LAN pueden acceder a
+   `http://IP-DE-LA-VM:8001`.
+
+### 4. Opciones de línea de comandos
 
 ```powershell
-uvicorn server:app --host 0.0.0.0 --port 8001
+NdiMultiview.exe --port 9000          # cambiar puerto
+NdiMultiview.exe --host 127.0.0.1     # solo escuchar en localhost
+NdiMultiview.exe --no-browser         # no abrir navegador (uso desatendido)
 ```
 
-Comprobar el descubrimiento (debe listar tus fuentes reales, no las DEMO):
+Variables de entorno reconocidas:
+
+- `NDI_PORT` — puerto por defecto (8001)
+- `NDI_HOST` — host de escucha (0.0.0.0)
+- `NDI_MULTIVIEW_DATA_DIR` — carpeta donde guardar `layouts.json`
+
+### 5. Firewall
+
+Abre las reglas de firewall de Windows:
+
+- **TCP 8001** (o el puerto elegido) — HTTP de la app
+- **UDP 5353** — mDNS (imprescindible para descubrir NDI)
+- **UDP + TCP 5960 – 5990** — streams NDI
+
+### 6. Instalar como servicio (opcional)
+
+Con [NSSM](https://nssm.cc/):
 
 ```powershell
-curl http://localhost:8001/api/sources
+nssm install NdiMultiview "C:\NDI\NdiMultiview.exe" "--no-browser"
+nssm set NdiMultiview AppDirectory "C:\NDI"
+nssm set NdiMultiview AppStdout "C:\NDI\log\out.log"
+nssm set NdiMultiview AppStderr "C:\NDI\log\err.log"
+nssm start NdiMultiview
 ```
 
-## 4. Frontend (React)
+### 7. Discovery Server (VLANs distintas)
 
-```powershell
-cd frontend
-yarn install
-```
-
-Editar `frontend\.env`:
-
-```
-REACT_APP_BACKEND_URL=http://IP-DEL-SERVIDOR:8001
-```
-
-> Si el navegador y el backend están en el **mismo** equipo puedes usar `http://localhost:8001`.
-
-```powershell
-yarn build
-# o para pruebas rápidas:
-yarn start
-```
-
-Sirve el `build/` con cualquier servidor estático (IIS, `serve`, nginx-win, etc.).
-
-## 5. Firewall
-
-Abrir en el firewall de Windows:
-
-- **TCP 8001** — backend FastAPI
-- **TCP 3000** (si usas `yarn start` en desarrollo)
-- **UDP 5353** — mDNS, entrada/salida (imprescindible para NDI)
-- **UDP 5960 – 5990** — NDI streams
-- **TCP 5960 – 5990** — NDI streams
-
-## 6. Verificación
-
-- `GET /api/config` → `{"ndi_available":true,"mode":"ndi"}`
-- `GET /api/sources` → lista con tus cámaras / PCs NDI reales (además de las 6 DEMO).
-- Si sólo ves las DEMO: revisa que las fuentes estén en la **misma subred**, que el firewall
-  no bloquee mDNS/UDP 5353 y que **NDI Studio Monitor** (de NDI Tools) sí las vea desde
-  ese mismo equipo. Si Studio Monitor tampoco las ve → problema de red, no de la app.
-
-## 7. (Opcional) Ejecutar como servicio de Windows
-
-Usar [NSSM](https://nssm.cc/):
-
-```powershell
-nssm install NdiMultiviewBackend ^
-    "C:\ruta\backend\.venv\Scripts\python.exe" ^
-    "-m" "uvicorn" "server:app" "--host" "0.0.0.0" "--port" "8001"
-nssm set NdiMultiviewBackend AppDirectory "C:\ruta\backend"
-nssm start NdiMultiviewBackend
-```
-
-## 8. Subredes distintas / Discovery Server
-
-Si tus fuentes viven en otra VLAN, ejecuta **NDI Discovery Server** (NDI Tools) en un equipo
-alcanzable por ambos lados y configúralo en el servidor con:
+Si las fuentes viven en otra subred, ejecuta **NDI Discovery Server** en algún equipo
+alcanzable por ambos lados y en la VM haz:
 
 ```powershell
 setx NDI_DISCOVERY_SERVER "IP.DEL.DISCOVERY.SERVER"
 ```
 
-Reinicia el backend.
+Reinicia el `.exe`.
+
+### 8. Verificación
+
+- Abre `http://localhost:8001/api/config`  →  `{"ndi_available":true,"mode":"ndi", ...}`
+- Abre `http://localhost:8001/api/sources` →  debe listar tus fuentes NDI reales.
+  Si solo aparecen las 6 DEMO, comprueba con **NDI Studio Monitor** que ese equipo sí
+  las ve. Si Studio Monitor tampoco las ve → problema de red o firewall, no del `.exe`.
+
+---
+
+## Troubleshooting
+
+| Síntoma | Causa habitual |
+|---|---|
+| Solo aparecen fuentes DEMO | La VM no está en la misma subred que las fuentes, o firewall bloquea UDP 5353 |
+| `ImportError: cyndilib` al arrancar | Falta el NDI Runtime — instala NDI Tools |
+| El `.exe` se cierra al doble-clic | Lánzalo desde una consola para ver el error |
+| Layouts no persisten | Revisa permisos de escritura en `%APPDATA%\NdiMultiview` |

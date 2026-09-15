@@ -1,25 +1,25 @@
-from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
+import os
+import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from ndi_service import ndi_service, NDI_AVAILABLE
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.cors import CORSMiddleware
+
+from ndi_service import NDI_AVAILABLE, ndi_service
+import layout_store
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
 
 app = FastAPI(title="NDI Multiview API")
 api_router = APIRouter(prefix="/api")
@@ -63,6 +63,23 @@ class ConfigOut(BaseModel):
     ndi_available: bool
     mode: str
     version: str = "1.0.0"
+    data_dir: str = ""
+
+
+# ---------- Helpers ----------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _serialize_layout(doc: Dict[str, Any]) -> LayoutOut:
+    return LayoutOut(
+        id=doc["id"],
+        name=doc["name"],
+        tiles=[TileConfig(**t) for t in doc.get("tiles", [])],
+        created_at=doc.get("created_at", _now_iso()),
+        updated_at=doc.get("updated_at", _now_iso()),
+    )
 
 
 # ---------- Endpoints ----------
@@ -74,7 +91,11 @@ async def root():
 
 @api_router.get("/config", response_model=ConfigOut)
 async def get_config():
-    return ConfigOut(ndi_available=NDI_AVAILABLE, mode=ndi_service.mode)
+    return ConfigOut(
+        ndi_available=NDI_AVAILABLE,
+        mode=ndi_service.mode,
+        data_dir=str(layout_store.DATA_DIR),
+    )
 
 
 @api_router.get("/sources", response_model=List[SourceOut])
@@ -96,15 +117,13 @@ async def list_sources(refresh: bool = False):
 
 @api_router.post("/sources/refresh", response_model=List[SourceOut])
 async def refresh_sources():
-    ndi_service.refresh(force=True)
-    return await list_sources(refresh=False)
+    return await list_sources(refresh=True)
 
 
 @api_router.get("/stream/{source_id}")
 async def stream_source(source_id: str):
     info = ndi_service.get_source(source_id)
     if info is None:
-        # Try a refresh in case it just showed up
         ndi_service.refresh(force=True)
         info = ndi_service.get_source(source_id)
     if info is None:
@@ -116,45 +135,27 @@ async def stream_source(source_id: str):
     )
 
 
-# ---------- Layouts CRUD ----------
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _serialize_layout(doc: Dict[str, Any]) -> LayoutOut:
-    return LayoutOut(
-        id=doc["id"],
-        name=doc["name"],
-        tiles=[TileConfig(**t) for t in doc.get("tiles", [])],
-        created_at=doc.get("created_at", _now_iso()),
-        updated_at=doc.get("updated_at", _now_iso()),
-    )
-
+# ---------- Layouts CRUD (JSON store, no DB required) ----------
 
 @api_router.get("/layouts", response_model=List[LayoutOut])
 async def list_layouts():
-    docs = await db.layouts.find({}, {"_id": 0}).sort("updated_at", -1).to_list(200)
-    return [_serialize_layout(d) for d in docs]
+    return [_serialize_layout(d) for d in layout_store.list_layouts()]
 
 
 @api_router.post("/layouts", response_model=LayoutOut)
 async def create_layout(payload: LayoutIn):
-    now = _now_iso()
     doc = {
         "id": str(uuid.uuid4()),
         "name": payload.name,
         "tiles": [t.model_dump() for t in payload.tiles],
-        "created_at": now,
-        "updated_at": now,
     }
-    await db.layouts.insert_one(doc)
+    doc = layout_store.create_layout(doc)
     return _serialize_layout(doc)
 
 
 @api_router.get("/layouts/{layout_id}", response_model=LayoutOut)
 async def get_layout(layout_id: str):
-    doc = await db.layouts.find_one({"id": layout_id}, {"_id": 0})
+    doc = layout_store.get_layout(layout_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Layout not found")
     return _serialize_layout(doc)
@@ -162,28 +163,28 @@ async def get_layout(layout_id: str):
 
 @api_router.put("/layouts/{layout_id}", response_model=LayoutOut)
 async def update_layout(layout_id: str, payload: LayoutIn):
-    now = _now_iso()
-    update_doc = {
+    patch = {
         "name": payload.name,
         "tiles": [t.model_dump() for t in payload.tiles],
-        "updated_at": now,
     }
-    result = await db.layouts.update_one({"id": layout_id}, {"$set": update_doc})
-    if result.matched_count == 0:
+    doc = layout_store.update_layout(layout_id, patch)
+    if not doc:
         raise HTTPException(status_code=404, detail="Layout not found")
-    doc = await db.layouts.find_one({"id": layout_id}, {"_id": 0})
     return _serialize_layout(doc)
 
 
 @api_router.delete("/layouts/{layout_id}")
 async def delete_layout(layout_id: str):
-    result = await db.layouts.delete_one({"id": layout_id})
-    if result.deleted_count == 0:
+    ok = layout_store.delete_layout(layout_id)
+    if not ok:
         raise HTTPException(status_code=404, detail="Layout not found")
     return {"ok": True}
 
 
 app.include_router(api_router)
+
+
+# ---------- CORS ----------
 
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +194,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ---------- Static frontend (for packaged .exe) ----------
+
+def _resolve_frontend_dir() -> Optional[Path]:
+    # 1) Explicit override
+    env_dir = os.environ.get("NDI_FRONTEND_DIR")
+    if env_dir and Path(env_dir).exists():
+        return Path(env_dir)
+    # 2) When frozen by PyInstaller, files are unpacked to _MEIPASS
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        candidate = meipass / "frontend_build"
+        if candidate.exists():
+            return candidate
+    # 3) Alongside the executable / source
+    for candidate in [
+        ROOT_DIR / "frontend_build",
+        ROOT_DIR.parent / "frontend" / "build",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+_frontend_dir = _resolve_frontend_dir()
+if _frontend_dir is not None:
+    # Serve JS/CSS assets
+    assets_dir = _frontend_dir / "static"
+    if assets_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(assets_dir)), name="static")
+
+    @app.get("/{full_path:path}")
+    async def spa_catch_all(full_path: str):
+        # Never intercept API routes
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        target = _frontend_dir / full_path
+        if full_path and target.is_file():
+            return FileResponse(target)
+        index_html = _frontend_dir / "index.html"
+        if index_html.exists():
+            return FileResponse(index_html)
+        raise HTTPException(status_code=404)
+
+
+# ---------- Lifecycle ----------
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -200,10 +248,15 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def _startup():
     ndi_service.refresh(force=True)
-    logger.info(f"NDI Multiview API up. Mode={ndi_service.mode} ndi_available={NDI_AVAILABLE}")
+    logger.info(
+        "NDI Multiview API up. mode=%s ndi_available=%s data_dir=%s frontend=%s",
+        ndi_service.mode,
+        NDI_AVAILABLE,
+        layout_store.DATA_DIR,
+        _frontend_dir or "(none)",
+    )
 
 
 @app.on_event("shutdown")
 async def _shutdown():
     ndi_service.shutdown()
-    client.close()
