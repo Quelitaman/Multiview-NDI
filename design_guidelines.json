@@ -1,0 +1,103 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings_and_metrics": {
+      "family": "Barlow Condensed, Oswald, sans-serif",
+      "weights": ["600", "700", "800"],
+      "usage": "FPS counters, Tally UMD (Under Monitor Display) labels, Grid preset numbers"
+    },
+    "body_and_ui": {
+      "family": "Inter, IBM Plex Sans, sans-serif",
+      "weights": ["400", "500", "600"],
+      "usage": "Sidebar lists, toolbar text, system status, metadata"
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#121212",
+      "canvas": "#050505"
+    },
+    "tally": {
+      "program_red": "#FF3B30",
+      "preview_green": "#34C759",
+      "warning_amber": "#FF9500",
+      "inactive": "#333333"
+    },
+    "text": {
+      "primary": "#F3F4F6",
+      "secondary": "#9CA3AF",
+      "muted": "#4B5563"
+    },
+    "border": {
+      "default": "#262626",
+      "focus": "#525252"
+    }
+  },
+  "visual_enhancers": {
+    "canvas_background": "Dot pattern grid (bg-[radial-gradient(#262626_1px,transparent_1px)] [background-size:20px_20px]) to suggest a drag-and-drop workspace.",
+    "tally_borders": "2px to 4px solid borders around video tiles that glow using drop-shadow when active (Program/Preview).",
+    "glassmorphism": "Avoid heavy glass on video layers to prevent distortion. Use subtle backdrop-blur-md ONLY on the floating top toolbar or modal overlays. NEVER use complete transparent background.",
+    "led_indicators": "Small circular glowing dots inside tiles for signal status (Green/Red/Amber). Use animate-pulse for lost signals (Amber)."
+  },
+  "components": {
+    "layout_canvas": {
+      "description": "Free-form drag & drop area. Should visually look like a dark command center grid.",
+      "classes": "relative w-full h-full bg-[#050505] overflow-hidden"
+    },
+    "video_tile": {
+      "description": "Resizable container for NDI stream. Minimal chrome.",
+      "classes": "group relative bg-black rounded-lg overflow-hidden border border-border/50 hover:border-border transition-colors",
+      "states": {
+        "program": "border-2 border-[#FF3B30] shadow-[0_0_15px_rgba(255,59,48,0.3)]",
+        "preview": "border-2 border-[#34C759]"
+      }
+    },
+    "umd_label": {
+      "description": "Under Monitor Display label. Floats at the bottom or top of the video tile.",
+      "classes": "absolute bottom-2 left-2 right-2 bg-black/80 backdrop-blur-sm p-2 rounded-md flex justify-between items-center border border-white/10"
+    },
+    "sidebar": {
+      "description": "Panel for NDI sources.",
+      "classes": "w-72 bg-[#121212] border-r border-[#262626] h-full flex flex-col"
+    },
+    "toolbar": {
+      "description": "Top actions (Save, Load, Grid Presets).",
+      "classes": "h-14 bg-[#0A0A0A]/90 backdrop-blur-md border-b border-[#262626] flex items-center px-4 justify-between"
+    }
+  },
+  "layouts": {
+    "structure": "App uses a full-screen layout: collapsible sidebar on left, fixed toolbar on top, and a free-form absolute-positioned canvas taking up the remaining space.",
+    "grid_presets": "2x2, 3x3, 4x4 buttons should instantly map absolute positions to create uniform grids within the canvas space.",
+    "spacing": "Dense layout. Use gap-2 or gap-4 for UI panels. Optical alignment over geometrical alignment for buttons."
+  },
+  "motion": {
+    "tally_switch": "Instant color change (0ms transition) for broadcast accuracy. Do not animate tally lights.",
+    "ui_interactions": "Subtle 150ms ease-in-out for sidebar hover states and buttons.",
+    "drag_drop": "Tiles should have a slight scale-up (scale-102) and elevated shadow (shadow-2xl) while dragging."
+  },
+  "accessibility": {
+    "contrast": "Ensure UMD text (Source Name, FPS) has APCA contrast over 60 against black backgrounds. Hover states must be explicit.",
+    "test_ids": "Include data-testid='ndi-source-item', data-testid='video-tile', data-testid='tally-indicator', data-testid='grid-preset', data-testid='canvas-area'"
+  },
+  "general_ui_ux_guidelines": {
+    "instruction": "This is a broadcast control interface. It must prioritize legibility in dark rooms, operational safety, and clear status visibility. Treat it as 'Tactical Minimalism'.",
+    "DO_NOT": "Do not use pure transparent backgrounds for any text containers. Do not center-align lists. Do not use soft pastel colors. Do not use AI emojis for icons. Do not apply universal transition:all."
+  },
+  "instructions_to_main_agent": [
+    "Implement a dark theme exclusively, avoiding standard SaaS blue.",
+    "Use standard HTML5 drag and drop or a library like react-rnd for the free-layout canvas, ensuring tiles are resizable.",
+    "Mock the NDI video feeds using placeholder solid colors or static image/video urls if real NDI stream is absent.",
+    "Ensure video tiles use absolute positioning for free-layout, with bounds restricted to the canvas.",
+    "Use Shadcn UI for sidebar, toolbar, and dialogs. Avoid generic Shadcn Cards for video tiles; use raw HTML/Tailwind for maximum flexibility.",
+    "All interactive elements MUST include a data-testid attribute."
+  ],
+  "universal_guidelines_for_main_agent": [
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Use sonner for toasts, located in /app/src/components/ui/sonner.tsx"
+  ],
+  "image_urls": {}
+}
