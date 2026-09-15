@@ -1,0 +1,22 @@
+{
+  "summary": "Backend smoke test for NDI Multiview API. All 7 requested scenarios pass against public REACT_APP_BACKEND_URL. Config exposes ndi_available=true & mode=ndi. /api/sources returns exactly the 6 demo sources with required fields. POST /api/sources/refresh re-scans and returns the same list. MJPEG stream for demo::0 returns HTTP 200 with content-type multipart/x-mixed-replace; boundary=frame and yields many JPEG frames (71 SOI markers in ~3s, ~525KB). /api/stream/invalid-id returns 404. Layouts CRUD (POST/GET list/GET id/PUT/DELETE + 404 after delete) all succeed. After ~3s of streaming, demo::0 fps updated from 7.0 to 25.0 confirming per-source fps metric is being updated during streaming.",
+  "tested_scope": ["backend", "integration"],
+  "passed": [
+    "GET /api/config -> 200 {ndi_available:true, mode:ndi, version:1.0.0}",
+    "GET /api/sources -> 200 with 6 demo sources; each has id, name, is_demo=true, connected=true, fps, width=640, height=360",
+    "POST /api/sources/refresh -> 200 returns 6 demo sources",
+    "GET /api/stream/demo::0 -> 200, content-type multipart/x-mixed-replace; boundary=frame, JPEG frames received (71 SOI markers)",
+    "GET /api/stream/invalid-id -> 404",
+    "POST /api/layouts creates layout with tiles; returns id + timestamps",
+    "GET /api/layouts lists created layout",
+    "GET /api/layouts/{id} retrieves it",
+    "PUT /api/layouts/{id} updates name/tiles and refreshes updated_at",
+    "DELETE /api/layouts/{id} -> {ok:true}; subsequent GET returns 404",
+    "MJPEG streaming updates source.fps (demo::0 fps=25.0 after ~3s of streaming)"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend only)"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
