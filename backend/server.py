@@ -299,8 +299,54 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def _install_windows_asyncio_filter():
+    """Suppress harmless Windows ProactorEventLoop ConnectionResetError spam.
+
+    When a client (browser) closes an MJPEG stream, Windows' proactor
+    transport raises `ConnectionResetError [WinError 10054]` from
+    `_ProactorBasePipeTransport._call_connection_lost`. It is not an
+    application error — the connection is already gone — but by default
+    asyncio's exception handler prints a full traceback for every one.
+    This installs an exception handler on the running loop that silently
+    swallows exactly that case while leaving all other exceptions intact.
+    """
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return
+
+    def _handler(loop, context):
+        exc = context.get("exception")
+        msg = context.get("message", "") or ""
+        if isinstance(exc, ConnectionResetError):
+            return
+        if isinstance(exc, ConnectionAbortedError):
+            return
+        # Belt-and-braces: some Windows builds surface it only via message.
+        if "_ProactorBasePipeTransport._call_connection_lost" in msg:
+            return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+    # Also silence the noisy asyncio traceback logger for the same case
+    # (Windows only emits this warning via logging as well).
+    class _ConnResetFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "ConnectionResetError" in msg and "10054" in msg:
+                return False
+            if "_ProactorBasePipeTransport._call_connection_lost" in msg:
+                return False
+            return True
+
+    logging.getLogger("asyncio").addFilter(_ConnResetFilter())
+
+
 @app.on_event("startup")
 async def _startup():
+    _install_windows_asyncio_filter()
     ndi_service.refresh(force=True)
     logger.info(
         "NDI Multiview API up. mode=%s ndi_available=%s data_dir=%s frontend=%s",
