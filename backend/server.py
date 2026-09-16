@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -175,7 +175,7 @@ async def set_source_bandwidth(source_id: str, payload: BandwidthIn):
 
 
 @api_router.get("/stream/{source_id}")
-async def stream_source(source_id: str):
+async def stream_source(source_id: str, request: Request):
     info = ndi_service.get_source(source_id)
     if info is None:
         ndi_service.refresh(force=True)
@@ -183,7 +183,7 @@ async def stream_source(source_id: str):
     if info is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return StreamingResponse(
-        ndi_service.mjpeg_stream(source_id),
+        ndi_service.mjpeg_stream_async(source_id, request),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
     )

@@ -2,6 +2,7 @@
 NDI service - discovers NDI sources on the network and streams frames.
 Falls back to demo mode with synthetic sources when no real NDI sources are found.
 """
+import asyncio
 import io
 import math
 import threading
@@ -444,11 +445,8 @@ class NDIService:
         return s.get_latest_rgb()
 
     def mjpeg_stream(self, source_id: str):
-        """Generator yielding a multipart MJPEG stream for the given source.
-
-        Uses the shared SourceStreamer so multiple viewers of the same source
-        share a single capture+encode loop.
-        """
+        """Sync generator (legacy). Prefer `mjpeg_stream_async` which cleans
+        up viewer count properly on client disconnect."""
         info = self.get_source(source_id)
         streamer = self._get_streamer(source_id)
         if streamer is None or info is None:
@@ -458,7 +456,7 @@ class NDIService:
         last_id = 0
         try:
             while True:
-                new_id, jpeg = streamer.wait_next_frame(last_id, timeout=2.0)
+                new_id, jpeg = streamer.wait_next_frame(last_id, timeout=0.5)
                 if jpeg is None:
                     jpeg = _no_signal_jpeg(info.name)
                 last_id = new_id
@@ -469,6 +467,47 @@ class NDIService:
                     jpeg
                 )
         except (GeneratorExit, ConnectionResetError):
+            return
+        except Exception:
+            return
+        finally:
+            streamer.remove_viewer()
+
+    async def mjpeg_stream_async(self, source_id: str, request):
+        """Async MJPEG generator.
+
+        Runs the blocking `wait_next_frame` in a thread executor so that
+        Starlette can cancel the task (via CancelledError) when the HTTP
+        client disconnects. The `finally` block is guaranteed to run and
+        decrements the shared streamer's viewer count so the capture+encode
+        loop can shut down when nobody is watching.
+        """
+        info = self.get_source(source_id)
+        streamer = self._get_streamer(source_id)
+        if streamer is None or info is None:
+            return
+        boundary = b"--frame"
+        streamer.add_viewer()
+        last_id = 0
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                # Break promptly when the client goes away.
+                if await request.is_disconnected():
+                    return
+                new_id, jpeg = await loop.run_in_executor(
+                    None, streamer.wait_next_frame, last_id, 0.5
+                )
+                if jpeg is None:
+                    jpeg = _no_signal_jpeg(info.name)
+                last_id = new_id
+                yield (
+                    b"\r\n" + boundary + b"\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
+                    jpeg
+                )
+        except (asyncio.CancelledError, GeneratorExit, ConnectionResetError):
             return
         except Exception:
             return

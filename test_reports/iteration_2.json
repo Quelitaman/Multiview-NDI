@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 2 (both): Validated bandwidth toggle endpoint, shared-streamer optimization, MJPEG headers/frames, Program Out lifecycle, and Layouts CRUD via pytest (9 tests, 8 passing). Frontend smoke passes — sidebar renders 6 DEMO sources, each shows a 'DEMO' chip (no bandwidth toggle in demo-only env), demo-only banner shown. Shared-streamer optimization works: two concurrent MJPEG viewers on demo::1 kept source.fps ~15 (not ~30), confirming SourceStreamer producer is shared. However one real bug was found: streamer does NOT shut down when the last MJPEG viewer disconnects — source.fps stays at ~15 indefinitely after the client closes the stream (repro against both localhost:8001 and external URL). This defeats the CPU optimization goal.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/stream/{source_id}",
+        "issue": "SourceStreamer._viewers never decrements when a client disconnects, so the capture+encode loop keeps running forever (source.fps remains ~15 many seconds after all viewers gone). Repro: `curl --max-time 3 $URL/api/stream/demo::4` then wait 8s and GET /api/sources → demo::4 fps=15.0 (expected 0.0). Root cause is almost certainly that starlette does not raise GeneratorExit into `ndi_service.mjpeg_stream` while the generator is blocked in `SourceStreamer.wait_next_frame` (Condition.wait). The finally block that calls `streamer.remove_viewer()` therefore never runs. Fix suggestion: (a) poll `request.is_disconnected()` between yields, or (b) shorten wait_next_frame timeout and yield a keepalive so starlette can raise GeneratorExit at the next yield, or (c) turn mjpeg_stream into an async generator that awaits an anyio event and cancels on disconnect. This breaks the promised optimization from the review request ('When no MJPEG viewers are connected and no program sender is running, source.fps should drop back to 0').",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_multiview_perf.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix mjpeg_stream() cleanup: ensure streamer.remove_viewer() actually runs when clients disconnect (see RCA). Verify by curling a stream for 2s, then polling /api/sources — fps must return to 0 within ~5s.",
+    "Optional: also ensure ProgramSender._sync_viewers runs on shutdown/apply so orphaned viewers can't keep streamers alive if program is re-applied with fewer tiles."
+  ],
+  "critical_code_review_comments": [
+    "ndi_service.mjpeg_stream is a sync generator; starlette can only raise GeneratorExit on the next yield. Because SourceStreamer.wait_next_frame blocks on Condition.wait up to 2s, the generator only reacts to disconnects after that timeout — AND only if starlette actually detects the disconnect for sync generators (it does not check request.is_disconnected between iter_content chunks). Recommend converting to async generator with `await asyncio.wait_for(...)` and explicit disconnect polling.",
+    "SourceStreamer._latest_id may overflow after long runtime — minor, ignorable.",
+    "ProgramSender.apply always calls _start_thread() even if enabled==True and thread already running (idempotent, but the log/timing is a bit noisy — cosmetic)."
+  ],
+  "updated_files": ["/app/backend/tests/test_multiview_perf.py"],
+  "success_rate": {"backend": "89% (8/9 pytest tests)", "frontend": "100% (sidebar smoke)"},
+  "seed_data_creation": "None persistent — a TEST_layout was created and deleted inside test_layouts_crud_flow.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Base URL comes from /app/frontend/.env (REACT_APP_BACKEND_URL). Run pytest with `-n 0` to override the pytest.ini xdist config (tests share global state). The only failing test is `test_fps_drops_to_zero_when_no_viewers` — retest after main agent fixes the mjpeg_stream disconnect cleanup. Real NDI sources will not appear in this container (mDNS blocked in k8s); only 6 demo sources are available so the sidebar always renders the 'DEMO' chip and the bandwidth-toggle UI branch is only exercisable in the packaged Windows build.",
+  "rca of the issue": "The shared-streamer viewer refcount never drops back to 0 when MJPEG clients disconnect. `SourceStreamer.wait_next_frame` blocks in a threading.Condition.wait for up to 2s; starlette's StreamingResponse for a sync generator only surfaces client disconnects at the next `yield`, and even then only via ClosedResourceError on the socket write — the finally that calls `remove_viewer()` therefore may never execute for streams that never wrote another frame after disconnect. In practice against this preview URL, curl --max-time 3 + 8s wait leaves fps=15. Mitigation: convert mjpeg_stream to `async def` and use `await request.is_disconnected()` between frames, or add a hard timeout so the generator exits and finally runs deterministically."
+}
