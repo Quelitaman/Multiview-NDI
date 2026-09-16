@@ -1,4 +1,6 @@
 import React from "react";
+import axios from "axios";
+import { toast } from "sonner";
 import { RefreshCw, Radio, Signal, Search } from "lucide-react";
 
 /**
@@ -6,16 +8,38 @@ import { RefreshCw, Radio, Signal, Search } from "lucide-react";
  * Click adds a tile to the canvas. Existing tiles are highlighted.
  */
 export default function SourceSidebar({
+  api,
   sources,
   onRefresh,
   onAddSource,
   activeSourceIds,
   loading,
+  onSourcesChanged,
 }) {
   const [q, setQ] = React.useState("");
   const filtered = sources.filter((s) =>
     s.name.toLowerCase().includes(q.toLowerCase())
   );
+
+  const toggleBandwidth = async (e, source) => {
+    e.stopPropagation();
+    if (source.is_demo) {
+      toast.info("Bandwidth setting only applies to real NDI sources");
+      return;
+    }
+    const next = source.bandwidth === "high" ? "low" : "high";
+    try {
+      await axios.post(`${api}/sources/${encodeURIComponent(source.id)}/bandwidth`, {
+        bandwidth: next,
+      });
+      toast.success(
+        `${source.name}: ${next === "high" ? "Full Bandwidth" : "Proxy (low)"}`
+      );
+      onSourcesChanged?.();
+    } catch (err) {
+      toast.error("Bandwidth change failed");
+    }
+  };
 
   return (
     <aside
@@ -99,7 +123,20 @@ export default function SourceSidebar({
                   {s.is_demo ? (
                     <span className="chip chip-amber !py-[1px]">DEMO</span>
                   ) : (
-                    <span className="chip chip-green !py-[1px]">NDI</span>
+                    <button
+                      onClick={(e) => toggleBandwidth(e, s)}
+                      className={`chip !py-[1px] hover:brightness-125 transition ${
+                        s.bandwidth === "high" ? "chip-red" : "chip-green"
+                      }`}
+                      title={
+                        s.bandwidth === "high"
+                          ? "Full Bandwidth — click for Proxy"
+                          : "Proxy (low CPU) — click for Full Bandwidth"
+                      }
+                      data-testid={`bandwidth-toggle-${s.id}`}
+                    >
+                      {s.bandwidth === "high" ? "FULL" : "PROXY"}
+                    </button>
                   )}
                   {s.width > 0 && (
                     <span>

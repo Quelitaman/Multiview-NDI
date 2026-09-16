@@ -56,6 +56,9 @@ class ProgramSender:
         self._out_fps = 0.0
         self._frame_count = 0
         self._last_error: Optional[str] = None
+        # Sources this sender is currently subscribed to (added as streamer
+        # viewers so the shared capture+encode loop stays alive).
+        self._active_sources: set = set()
 
     # ---------- Public API ----------
 
@@ -126,7 +129,10 @@ class ProgramSender:
         # Manage lifecycle
         if not self._cfg.enabled:
             self._stop_thread()
+            self._sync_viewers(set())
         else:
+            # Subscribe/unsubscribe streamers based on the new tile set.
+            self._sync_viewers({t.source_id for t in self._cfg.tiles if t.source_id})
             if restart_needed:
                 self._stop_thread()
             self._start_thread()
@@ -134,6 +140,24 @@ class ProgramSender:
 
     def shutdown(self):
         self._stop_thread()
+        self._sync_viewers(set())
+
+    def _sync_viewers(self, desired: set):
+        """Add/remove ourselves as viewers on the source streamers so they
+        only run their capture loop when we actually need frames."""
+        to_add = desired - self._active_sources
+        to_remove = self._active_sources - desired
+        for sid in to_add:
+            try:
+                self._ndi.add_viewer(sid)
+            except Exception:
+                pass
+        for sid in to_remove:
+            try:
+                self._ndi.remove_viewer(sid)
+            except Exception:
+                pass
+        self._active_sources = set(desired)
 
     # ---------- Thread management ----------
 

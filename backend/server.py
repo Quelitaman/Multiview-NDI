@@ -37,6 +37,11 @@ class SourceOut(BaseModel):
     fps: float
     width: int
     height: int
+    bandwidth: str = "low"
+
+
+class BandwidthIn(BaseModel):
+    bandwidth: str  # "low" | "high"
 
 
 class TileConfig(BaseModel):
@@ -148,6 +153,7 @@ async def list_sources(refresh: bool = False):
             fps=round(s.fps, 1),
             width=s.width,
             height=s.height,
+            bandwidth=s.bandwidth,
         )
         for s in ndi_service.list_sources()
     ]
@@ -156,6 +162,16 @@ async def list_sources(refresh: bool = False):
 @api_router.post("/sources/refresh", response_model=List[SourceOut])
 async def refresh_sources():
     return await list_sources(refresh=True)
+
+
+@api_router.post("/sources/{source_id}/bandwidth")
+async def set_source_bandwidth(source_id: str, payload: BandwidthIn):
+    if payload.bandwidth not in ("low", "high"):
+        raise HTTPException(status_code=400, detail="bandwidth must be 'low' or 'high'")
+    ok = ndi_service.set_bandwidth(source_id, payload.bandwidth)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return {"ok": True, "bandwidth": payload.bandwidth}
 
 
 @api_router.get("/stream/{source_id}")

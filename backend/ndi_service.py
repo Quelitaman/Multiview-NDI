@@ -27,12 +27,123 @@ class SourceInfo:
     id: str
     name: str
     is_demo: bool = False
+    # bandwidth mode: "low" (NDI proxy, ~640×360) or "high" (full bandwidth)
+    bandwidth: str = "low"
     # runtime
     connected: bool = False
     fps: float = 0.0
     width: int = 0
     height: int = 0
     last_frame_time: float = field(default_factory=lambda: 0.0)
+
+
+class SourceStreamer:
+    """One capture+encode loop per source, shared across all viewers.
+
+    Multiple MJPEG connections to the same source share the same producer
+    thread; the program sender reads the latest RGB frame from here too.
+    Runs while `_viewers > 0` (viewers = MJPEG clients + program sender).
+    """
+
+    TARGET_FPS = 15
+    MAX_WIDTH = 480
+    JPEG_QUALITY = 60
+
+    def __init__(self, service: "NDIService", source_id: str):
+        self.service = service
+        self.source_id = source_id
+        self._latest_jpeg: Optional[bytes] = None
+        self._latest_rgb: Optional[np.ndarray] = None
+        self._latest_id = 0
+        self._cond = threading.Condition()
+        self._viewers = 0
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def add_viewer(self):
+        with self._cond:
+            self._viewers += 1
+            if self._thread is None or not self._thread.is_alive():
+                self._stop.clear()
+                self._thread = threading.Thread(
+                    target=self._run, name=f"streamer:{self.source_id}", daemon=True
+                )
+                self._thread.start()
+
+    def remove_viewer(self):
+        with self._cond:
+            self._viewers = max(0, self._viewers - 1)
+            if self._viewers == 0:
+                self._stop.set()
+                self._cond.notify_all()
+
+    def wait_next_frame(self, last_id: int, timeout: float = 2.0):
+        with self._cond:
+            deadline = time.time() + timeout
+            while not self._stop.is_set() and self._latest_id == last_id:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._cond.wait(timeout=remaining)
+            return self._latest_id, self._latest_jpeg
+
+    def get_latest_rgb(self) -> Optional[np.ndarray]:
+        with self._cond:
+            return self._latest_rgb
+
+    def clear_cache(self):
+        with self._cond:
+            self._latest_jpeg = None
+            self._latest_rgb = None
+            self._cond.notify_all()
+
+    def _run(self):
+        interval = 1.0 / self.TARGET_FPS
+        info = self.service.get_source(self.source_id)
+        frame_times: List[float] = []
+        while not self._stop.is_set():
+            t0 = time.time()
+            rgb = self.service._get_rgb_frame(self.source_id)
+            if rgb is not None:
+                jpeg = self._encode_jpeg(rgb)
+                with self._cond:
+                    self._latest_rgb = rgb
+                    self._latest_jpeg = jpeg
+                    self._latest_id += 1
+                    self._cond.notify_all()
+                if info is not None:
+                    now = time.time()
+                    frame_times.append(now)
+                    cutoff = now - 1.0
+                    while frame_times and frame_times[0] < cutoff:
+                        frame_times.pop(0)
+                    info.fps = float(len(frame_times))
+                    info.last_frame_time = now
+            elapsed = time.time() - t0
+            sleep_for = interval - elapsed
+            if sleep_for > 0:
+                self._stop.wait(sleep_for)
+        # Cleanup on exit
+        if info is not None:
+            info.fps = 0.0
+
+    def _encode_jpeg(self, rgb: np.ndarray) -> bytes:
+        h, w = rgb.shape[:2]
+        # Fast integer-step downscale via numpy slicing; keeps CPU low.
+        if w > self.MAX_WIDTH:
+            step = max(1, int(round(w / self.MAX_WIDTH)))
+            rgb = rgb[::step, ::step]
+        img = Image.fromarray(rgb, "RGB")
+        buf = io.BytesIO()
+        img.save(
+            buf,
+            format="JPEG",
+            quality=self.JPEG_QUALITY,
+            subsampling=2,  # 4:2:0
+            optimize=False,
+            progressive=False,
+        )
+        return buf.getvalue()
 
 
 class DemoStream:
@@ -128,6 +239,7 @@ class NDIService:
         self._demo_streams: Dict[str, DemoStream] = {}
         self._receivers: Dict[str, "Receiver"] = {}
         self._video_frames: Dict[str, "VideoFrameSync"] = {}
+        self._streamers: Dict[str, SourceStreamer] = {}
         self._lock = threading.RLock()
         self._last_refresh = 0.0
 
@@ -230,7 +342,11 @@ class NDIService:
                     return None
                 recv = Receiver(
                     color_format=RecvColorFormat.RGBX_RGBA,
-                    bandwidth=RecvBandwidth.highest,
+                    bandwidth=(
+                        RecvBandwidth.lowest
+                        if info.bandwidth == "low"
+                        else RecvBandwidth.highest
+                    ),
                 )
                 video_frame = VideoFrameSync()
                 recv.frame_sync.set_video_frame(video_frame)
@@ -240,21 +356,6 @@ class NDIService:
                 return recv
             except Exception:
                 return None
-
-    def _pull_ndi_jpeg(self, info: SourceInfo) -> Optional[bytes]:
-        arr = self._pull_ndi_rgb(info)
-        if arr is None:
-            return None
-        h, w = arr.shape[:2]
-        img = Image.fromarray(arr, "RGB")
-        # Downscale large frames for browser efficiency
-        if w > 960:
-            new_w = 960
-            new_h = int(h * new_w / w)
-            img = img.resize((new_w, new_h), Image.BILINEAR)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=70)
-        return buf.getvalue()
 
     def _pull_ndi_rgb(self, info: SourceInfo) -> Optional[np.ndarray]:
         recv = self._ensure_receiver(info)
@@ -270,11 +371,13 @@ class NDIService:
                 return None
             arr = np.asarray(video_frame.get_array(), dtype=np.uint8, copy=False)
             try:
-                arr = arr.reshape(h, w, 4)[:, :, :3]
+                # Copy is required — cyndilib overwrites the buffer on the
+                # next capture_video() call.
+                arr = arr.reshape(h, w, 4)[:, :, :3].copy()
             except Exception:
                 total = arr.size
                 if total == h * w * 4:
-                    arr = arr.reshape(h, w, 4)[:, :, :3]
+                    arr = arr.reshape(h, w, 4)[:, :, :3].copy()
                 else:
                     return None
             info.width, info.height = w, h
@@ -283,76 +386,94 @@ class NDIService:
         except Exception:
             return None
 
-    def get_frame_rgb(self, source_id: str) -> Optional[np.ndarray]:
-        """Return the latest frame for a source as an RGB uint8 ndarray.
+    # ---- Streamer / bandwidth ----
 
-        Used by both the MJPEG endpoint and the program (composite) NDI sender.
-        """
+    def _get_streamer(self, source_id: str) -> Optional[SourceStreamer]:
+        with self._lock:
+            if source_id not in self._sources:
+                return None
+            streamer = self._streamers.get(source_id)
+            if streamer is None:
+                streamer = SourceStreamer(self, source_id)
+                self._streamers[source_id] = streamer
+            return streamer
+
+    def _get_rgb_frame(self, source_id: str) -> Optional[np.ndarray]:
+        """Producer helper — called only from a SourceStreamer thread."""
         info = self.get_source(source_id)
         if info is None:
             return None
         if info.is_demo:
             stream = self._demo_streams.get(source_id)
-            if stream is None:
-                return None
-            return stream.render_frame_array()
+            return stream.render_frame_array() if stream is not None else None
         return self._pull_ndi_rgb(info)
 
-    def mjpeg_stream(self, source_id: str):
-        """Generator yielding a multipart MJPEG stream for the given source."""
+    def set_bandwidth(self, source_id: str, bandwidth: str) -> bool:
+        if bandwidth not in ("low", "high"):
+            return False
         info = self.get_source(source_id)
         if info is None:
+            return False
+        if info.bandwidth == bandwidth:
+            return True
+        with self._lock:
+            info.bandwidth = bandwidth
+            if not info.is_demo:
+                # Recreate the receiver with the new bandwidth mode.
+                self._drop_receiver(source_id)
+            streamer = self._streamers.get(source_id)
+        if streamer is not None:
+            streamer.clear_cache()
+        return True
+
+    def add_viewer(self, source_id: str):
+        s = self._get_streamer(source_id)
+        if s is not None:
+            s.add_viewer()
+
+    def remove_viewer(self, source_id: str):
+        s = self._streamers.get(source_id)
+        if s is not None:
+            s.remove_viewer()
+
+    def get_frame_rgb(self, source_id: str) -> Optional[np.ndarray]:
+        """Latest RGB frame from the shared cache (used by ProgramSender)."""
+        s = self._streamers.get(source_id)
+        if s is None:
+            return None
+        return s.get_latest_rgb()
+
+    def mjpeg_stream(self, source_id: str):
+        """Generator yielding a multipart MJPEG stream for the given source.
+
+        Uses the shared SourceStreamer so multiple viewers of the same source
+        share a single capture+encode loop.
+        """
+        info = self.get_source(source_id)
+        streamer = self._get_streamer(source_id)
+        if streamer is None or info is None:
             return
         boundary = b"--frame"
-        target_fps = 25
-        frame_interval = 1.0 / target_fps
-        # For FPS metric
-        frame_times: List[float] = []
-
+        streamer.add_viewer()
+        last_id = 0
         try:
             while True:
-                start = time.time()
-                jpeg: Optional[bytes] = None
-                if info.is_demo:
-                    stream = self._demo_streams.get(source_id)
-                    if stream is not None:
-                        jpeg = stream.render_frame()
-                        info.width = stream.width
-                        info.height = stream.height
-                        info.connected = True
-                else:
-                    jpeg = self._pull_ndi_jpeg(info)
-
+                new_id, jpeg = streamer.wait_next_frame(last_id, timeout=2.0)
                 if jpeg is None:
-                    # send a placeholder "no signal" frame
                     jpeg = _no_signal_jpeg(info.name)
-
-                now = time.time()
-                frame_times.append(now)
-                cutoff = now - 1.0
-                while frame_times and frame_times[0] < cutoff:
-                    frame_times.pop(0)
-                info.fps = float(len(frame_times))
-                info.last_frame_time = now
-
+                last_id = new_id
                 yield (
                     b"\r\n" + boundary + b"\r\n"
                     b"Content-Type: image/jpeg\r\n"
                     b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
                     jpeg
                 )
-
-                # Pace the loop for both demo and real NDI sources so we
-                # never spin at hundreds of FPS when the source hasn't
-                # produced a fresh frame yet.
-                elapsed = time.time() - start
-                sleep_for = frame_interval - elapsed
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
         except (GeneratorExit, ConnectionResetError):
             return
         except Exception:
             return
+        finally:
+            streamer.remove_viewer()
 
     def shutdown(self):
         with self._lock:

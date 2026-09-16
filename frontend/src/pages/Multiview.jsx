@@ -347,11 +347,13 @@ export default function Multiview() {
 
       <div className="flex flex-1 min-h-0">
         <SourceSidebar
+          api={API}
           sources={sources}
           onRefresh={() => loadSources(true)}
           onAddSource={addTileForSource}
           activeSourceIds={activeSourceIds}
           loading={loadingSources}
+          onSourcesChanged={() => loadSources(false)}
         />
 
         <main className="flex-1 min-w-0 flex flex-col">
