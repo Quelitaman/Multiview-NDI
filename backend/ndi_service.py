@@ -56,7 +56,8 @@ class DemoStream:
         self.palette = self.PALETTES[index % len(self.PALETTES)]
         self._t0 = time.time()
 
-    def render_frame(self) -> bytes:
+    def render_frame_array(self) -> np.ndarray:
+        """Render one demo frame as an RGB uint8 ndarray (h, w, 3)."""
         t = time.time() - self._t0
         w, h = self.width, self.height
         # Gradient background
@@ -104,6 +105,11 @@ class DemoStream:
         for (x, y) in [(6, 6), (w - 6, 6), (6, h - 6), (w - 6, h - 6)]:
             draw.rectangle([x - 12, y - 2, x, y] if x > 6 else [x, y - 2, x + 12, y], fill=(255, 255, 255))
 
+        return np.array(img, dtype=np.uint8)
+
+    def render_frame(self) -> bytes:
+        arr = self.render_frame_array()
+        img = Image.fromarray(arr, "RGB")
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=70)
         return buf.getvalue()
@@ -236,6 +242,21 @@ class NDIService:
                 return None
 
     def _pull_ndi_jpeg(self, info: SourceInfo) -> Optional[bytes]:
+        arr = self._pull_ndi_rgb(info)
+        if arr is None:
+            return None
+        h, w = arr.shape[:2]
+        img = Image.fromarray(arr, "RGB")
+        # Downscale large frames for browser efficiency
+        if w > 960:
+            new_w = 960
+            new_h = int(h * new_w / w)
+            img = img.resize((new_w, new_h), Image.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=70)
+        return buf.getvalue()
+
+    def _pull_ndi_rgb(self, info: SourceInfo) -> Optional[np.ndarray]:
         recv = self._ensure_receiver(info)
         if recv is None:
             return None
@@ -243,9 +264,6 @@ class NDIService:
         if video_frame is None:
             return None
         try:
-            # FrameSync: capture_video() always fills video_frame with the
-            # latest frame (buffered by the NDI runtime). It does not block
-            # waiting for new data — we pace the loop from the caller.
             recv.frame_sync.capture_video()
             w, h = video_frame.get_resolution()
             if w <= 0 or h <= 0:
@@ -254,25 +272,31 @@ class NDIService:
             try:
                 arr = arr.reshape(h, w, 4)[:, :, :3]
             except Exception:
-                # Some sources may return a flat buffer differently strided
                 total = arr.size
                 if total == h * w * 4:
                     arr = arr.reshape(h, w, 4)[:, :, :3]
                 else:
                     return None
-            img = Image.fromarray(arr, "RGB")
             info.width, info.height = w, h
             info.connected = True
-            # Downscale large frames for browser efficiency
-            if w > 960:
-                new_w = 960
-                new_h = int(h * new_w / w)
-                img = img.resize((new_w, new_h), Image.BILINEAR)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=70)
-            return buf.getvalue()
+            return arr
         except Exception:
             return None
+
+    def get_frame_rgb(self, source_id: str) -> Optional[np.ndarray]:
+        """Return the latest frame for a source as an RGB uint8 ndarray.
+
+        Used by both the MJPEG endpoint and the program (composite) NDI sender.
+        """
+        info = self.get_source(source_id)
+        if info is None:
+            return None
+        if info.is_demo:
+            stream = self._demo_streams.get(source_id)
+            if stream is None:
+                return None
+            return stream.render_frame_array()
+        return self._pull_ndi_rgb(info)
 
     def mjpeg_stream(self, source_id: str):
         """Generator yielding a multipart MJPEG stream for the given source."""

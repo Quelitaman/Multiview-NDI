@@ -7,6 +7,8 @@ import {
   Maximize,
   Plus,
   ChevronDown,
+  Radio,
+  CircleDot,
 } from "lucide-react";
 
 const GRID_PRESETS = [
@@ -28,6 +30,8 @@ export default function Toolbar({
   onGlobalFullscreen,
   onClearCanvas,
   mode,
+  programStatus,
+  onOpenProgramOut,
 }) {
   const [openLayouts, setOpenLayouts] = React.useState(false);
   const layoutRef = React.useRef(null);
@@ -84,6 +88,34 @@ export default function Toolbar({
       </div>
 
       <div className="flex items-center gap-2">
+        <button
+          className={`toolbar-btn ${programStatus?.enabled ? "danger" : ""}`}
+          onClick={onOpenProgramOut}
+          data-testid="program-out-btn"
+          title="Publicar multiview como fuente NDI"
+          style={
+            programStatus?.enabled
+              ? {
+                  color: "#FF3B30",
+                  borderColor: "#FF3B30",
+                  background: "rgba(255,59,48,0.08)",
+                }
+              : undefined
+          }
+        >
+          {programStatus?.enabled ? (
+            <>
+              <CircleDot size={12} className="animate-pulse" />
+              <span>ON AIR · {programStatus.out_fps || 0}</span>
+            </>
+          ) : (
+            <>
+              <Radio size={12} />
+              <span>Program Out</span>
+            </>
+          )}
+        </button>
+
         <button
           className="toolbar-btn"
           onClick={onClearCanvas}

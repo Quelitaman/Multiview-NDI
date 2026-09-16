@@ -6,6 +6,7 @@ import { X } from "lucide-react";
 import Toolbar from "@/components/Toolbar";
 import SourceSidebar from "@/components/SourceSidebar";
 import VideoTile from "@/components/VideoTile";
+import ProgramOutDialog from "@/components/ProgramOutDialog";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 const API = `${BACKEND_URL}/api`;
@@ -24,6 +25,8 @@ export default function Multiview() {
   const [saveName, setSaveName] = React.useState("");
   const [loadingSources, setLoadingSources] = React.useState(false);
   const [fullscreenTileId, setFullscreenTileId] = React.useState(null);
+  const [programStatus, setProgramStatus] = React.useState(null);
+  const [programDialogOpen, setProgramDialogOpen] = React.useState(false);
 
   const canvasRef = React.useRef(null);
   const appRef = React.useRef(null);
@@ -69,13 +72,74 @@ export default function Multiview() {
     }
   }, []);
 
+  const loadProgramStatus = React.useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API}/program`);
+      setProgramStatus(data);
+    } catch (e) {
+      // no-op
+    }
+  }, []);
+
+  // If program is on, push updated tiles/canvas whenever the layout changes
+  const programStatusRef = React.useRef(null);
+  React.useEffect(() => {
+    programStatusRef.current = programStatus;
+  }, [programStatus]);
+
+  const pushProgramLayout = React.useCallback(async (nextTiles) => {
+    const currentStatus = programStatusRef.current;
+    if (!currentStatus?.enabled) return;
+    const canvas = canvasRef.current;
+    const canvas_width = canvas?.clientWidth || 1920;
+    const canvas_height = canvas?.clientHeight || 1080;
+    try {
+      const { data } = await axios.post(`${API}/program`, {
+        enabled: true,
+        ndi_name: currentStatus.ndi_name || "NdiMultiview",
+        width: currentStatus.width || 1920,
+        height: currentStatus.height || 1080,
+        fps: currentStatus.fps || 30,
+        canvas_width,
+        canvas_height,
+        tiles: nextTiles.map((t) => ({
+          source_id: t.source_id,
+          x: t.x,
+          y: t.y,
+          width: t.width,
+          height: t.height,
+        })),
+      });
+      setProgramStatus(data);
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
   React.useEffect(() => {
     loadConfig();
     loadSources(false);
     loadLayouts();
+    loadProgramStatus();
     const t = setInterval(() => loadSources(false), 2000);
-    return () => clearInterval(t);
-  }, [loadConfig, loadSources, loadLayouts]);
+    const tp = setInterval(loadProgramStatus, 2000);
+    return () => {
+      clearInterval(t);
+      clearInterval(tp);
+    };
+  }, [loadConfig, loadSources, loadLayouts, loadProgramStatus]);
+
+  // When the layout changes locally and program is on air, push the composite.
+  // Skip the initial render and only fire when tiles actually change.
+  const firstTilesRun = React.useRef(true);
+  React.useEffect(() => {
+    if (firstTilesRun.current) {
+      firstTilesRun.current = false;
+      return;
+    }
+    pushProgramLayout(tiles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles]);
 
   // ------- Tile ops -------
   const addTileForSource = (source) => {
@@ -277,6 +341,8 @@ export default function Multiview() {
         onNewLayout={newLayout}
         onGlobalFullscreen={goGlobalFullscreen}
         onClearCanvas={clearCanvas}
+        programStatus={programStatus}
+        onOpenProgramOut={() => setProgramDialogOpen(true)}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -333,6 +399,11 @@ export default function Multiview() {
             <span>NDI RUNTIME: {config.ndi_available ? "OK" : "N/A"}</span>
             <span>SOURCES: {sources.length}</span>
             <span>TILES: {tiles.length}</span>
+            {programStatus?.enabled && (
+              <span className="text-[#FF6961]">
+                ● PROGRAM: {programStatus.ndi_name} @ {programStatus.width}×{programStatus.height} {programStatus.fps}p · {programStatus.out_fps} fps
+              </span>
+            )}
             <span className="ml-auto truncate" data-testid="current-layout-name">
               LAYOUT: {currentLayoutName}
               {currentLayoutId ? "" : "  *"}
@@ -340,6 +411,19 @@ export default function Multiview() {
           </div>
         </main>
       </div>
+
+      <ProgramOutDialog
+        api={API}
+        open={programDialogOpen}
+        onClose={() => setProgramDialogOpen(false)}
+        status={programStatus}
+        onStatusChange={setProgramStatus}
+        tiles={tiles}
+        canvasSize={{
+          width: canvasRef.current?.clientWidth || 1920,
+          height: canvasRef.current?.clientHeight || 1080,
+        }}
+      />
 
       {/* Save dialog */}
       {saveDialogOpen && (

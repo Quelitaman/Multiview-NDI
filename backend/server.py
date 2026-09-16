@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.cors import CORSMiddleware
 
 from ndi_service import NDI_AVAILABLE, ndi_service
+from program_sender import ProgramSender
 import layout_store
 
 
@@ -23,6 +24,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 app = FastAPI(title="NDI Multiview API")
 api_router = APIRouter(prefix="/api")
+program_sender = ProgramSender(ndi_service)
 
 
 # ---------- Models ----------
@@ -64,6 +66,27 @@ class ConfigOut(BaseModel):
     mode: str
     version: str = "1.0.0"
     data_dir: str = ""
+    ndi_send_available: bool = False
+
+
+class ProgramTileIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    source_id: Optional[str] = None
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class ProgramConfigIn(BaseModel):
+    enabled: bool
+    ndi_name: Optional[str] = "NdiMultiview"
+    width: int = 1920
+    height: int = 1080
+    fps: int = 30
+    canvas_width: Optional[float] = None
+    canvas_height: Optional[float] = None
+    tiles: Optional[List[ProgramTileIn]] = None
 
 
 # ---------- Helpers ----------
@@ -95,7 +118,22 @@ async def get_config():
         ndi_available=NDI_AVAILABLE,
         mode=ndi_service.mode,
         data_dir=str(layout_store.DATA_DIR),
+        ndi_send_available=program_sender.available,
     )
+
+
+@api_router.get("/program")
+async def get_program_status():
+    return program_sender.get_status()
+
+
+@api_router.post("/program")
+async def set_program(cfg: ProgramConfigIn):
+    payload = cfg.model_dump()
+    if payload.get("tiles") is not None:
+        payload["tiles"] = [t for t in payload["tiles"]]
+    status = program_sender.apply(payload)
+    return status
 
 
 @api_router.get("/sources", response_model=List[SourceOut])
@@ -259,4 +297,5 @@ async def _startup():
 
 @app.on_event("shutdown")
 async def _shutdown():
+    program_sender.shutdown()
     ndi_service.shutdown()

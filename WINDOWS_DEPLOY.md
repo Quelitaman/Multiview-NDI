@@ -77,7 +77,21 @@ Abre las reglas de firewall de Windows:
 
 - **TCP 8001** (o el puerto elegido) — HTTP de la app
 - **UDP 5353** — mDNS (imprescindible para descubrir NDI)
-- **UDP + TCP 5960 – 5990** — streams NDI
+- **UDP + TCP 5960 – 5990** — streams NDI (recepción **y** envío del Program Out)
+
+### 5b. Publicar el multiview como fuente NDI (Program Out)
+
+La app puede **enviar** el multiview compuesto como una fuente NDI en la red para que
+vMix / OBS-NDI / TriCaster / Studio Monitor la consuman:
+
+1. Coloca las tiles como quieras en el canvas.
+2. Toolbar → **Program Out** → elige nombre (`NdiMultiview`), resolución (720p–2160p),
+   frame rate (25/30/50/60) y pulsa **Go On Air**.
+3. El toolbar muestra **ON AIR · <fps>** en rojo mientras esté activo.
+4. En el resto de la red aparecerá una fuente NDI llamada `HOSTNAME (NdiMultiview)`.
+
+El sender se compone en el servidor (RGB → BGRA) y respeta el frame rate elegido.
+Cualquier cambio de layout mientras está ON AIR se envía automáticamente.
 
 ### 6. Instalar como servicio (opcional)
 
