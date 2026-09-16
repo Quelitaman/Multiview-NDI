@@ -1,0 +1,23 @@
+{
+  "summary": "Iteration 3 retest against external REACT_APP_BACKEND_URL. The HIGH bug from iteration_2 is FIXED. mjpeg_stream_async correctly triggers finally/remove_viewer on client disconnect. All 9 iteration_2 tests remain green AND 5 new targeted regression tests pass (14/14 total). Verified: (a) demo::0/1/4 fps drops to 0.0 within 6s after a 3s curl-style stream; (b) two concurrent viewers on demo::2 share the streamer (~15fps, not ~30) and drop to 0 after close; (c) Program Out with 3 tiles produces out_fps>15 and, on disable, all referenced sources drop to 0.0 within 6s — confirming no orphan streamers.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_multiview_perf.py",
+    "/app/backend/tests/test_disconnect_cleanup.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mjpeg_stream_async uses asyncio.run_in_executor for the blocking wait_next_frame + polls request.is_disconnected() between frames — clean and idiomatic.",
+    "Legacy sync mjpeg_stream() is kept for compat but no longer wired; consider deleting to avoid future confusion.",
+    "SourceStreamer.remove_viewer decrements _viewers; when it reaches 0 the capture loop exits and source.fps returns to 0 — verified end-to-end."
+  ],
+  "updated_files": ["/app/backend/tests/test_disconnect_cleanup.py"],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "not tested (per request)"},
+  "seed_data_creation": "None persistent.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iteration_2 HIGH bug resolved. Base URL from /app/frontend/.env. Run pytest with -n 0 (tests share global streamer state). Two test files: test_multiview_perf.py (9 tests) and test_disconnect_cleanup.py (5 tests, targeted for the mjpeg_stream_async disconnect-cleanup fix).",
+  "rca of the issue": "Fix confirmed: converting mjpeg_stream to async and polling request.is_disconnected() between frames while running the blocking wait_next_frame in an executor ensures Starlette can raise CancelledError into the async generator on disconnect, so the finally block reliably calls streamer.remove_viewer() and _viewers drops to 0."
+}
