@@ -1,0 +1,24 @@
+{
+  "summary": "Iteration 4 backend-only retest for the new _install_windows_asyncio_filter hook. Added test_windows_asyncio_filter.py (4 tests) covering: (a) GET /api/config still returns full expected shape after startup hook runs; (b) the asyncio logging.Filter drops synthetic 'ConnectionResetError ... 10054' and '_ProactorBasePipeTransport._call_connection_lost' records while an unrelated asyncio.warning still passes through (proves asyncio logging is NOT globally silenced); (c) the loop.set_exception_handler swallows ConnectionResetError, ConnectionAbortedError, and the proactor message-only case, while forwarding any other exception to the default handler; (d) 10 rapid open/close cycles on demo::0 leave no orphan streamer (fps=0, still 6 sources present). All 14 prior tests (test_multiview_perf.py + test_disconnect_cleanup.py) remain green. Final result: 18/18 passed in 82s with -n 0.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_windows_asyncio_filter.py",
+    "/app/backend/tests/test_multiview_perf.py",
+    "/app/backend/tests/test_disconnect_cleanup.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_install_windows_asyncio_filter is defensive and correctly scoped: exception_handler only shortcircuits on ConnectionResetError/ConnectionAbortedError or the exact proactor message; everything else falls through to loop.default_exception_handler. Verified in test.",
+    "The _ConnResetFilter is attached ONLY to the 'asyncio' logger (not root) and matches on both 'ConnectionResetError'+'10054' and the proactor callback string — narrow enough that unrelated asyncio warnings still emit. Verified.",
+    "Minor: FastAPI @app.on_event('startup'/'shutdown') is deprecated; consider migrating to lifespan handlers when convenient (not blocking).",
+    "Minor: asyncio.get_event_loop() inside the hook is fine because it runs from the startup coroutine (loop is running), but on Python 3.12+ this API will keep working only inside a running loop — current call site is safe."
+  ],
+  "updated_files": ["/app/backend/tests/test_windows_asyncio_filter.py"],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "not tested (per request)"},
+  "seed_data_creation": "None persistent (TEST_ layout created and deleted in CRUD test).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Windows-specific ConnectionResetError from ProactorEventLoop cannot be reproduced on this Linux container; verification is done via in-process unit test of _install_windows_asyncio_filter plus regression of iteration_3's 14 tests. Run: cd /app/backend && pytest tests/ -v -n 0 (tests share global streamer state; ~82s runtime). Base URL from /app/frontend/.env REACT_APP_BACKEND_URL."
+}
