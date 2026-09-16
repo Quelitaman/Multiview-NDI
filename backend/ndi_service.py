@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 try:
     from cyndilib.finder import Finder
     from cyndilib.receiver import Receiver
-    from cyndilib.video_frame import VideoRecvFrame
+    from cyndilib.video_frame import VideoFrameSync
     from cyndilib.wrapper.ndi_recv import RecvBandwidth, RecvColorFormat
     NDI_AVAILABLE = True
 except Exception:  # pragma: no cover - cyndilib not installed / no NDI runtime
@@ -121,7 +121,7 @@ class NDIService:
         self._sources: Dict[str, SourceInfo] = {}
         self._demo_streams: Dict[str, DemoStream] = {}
         self._receivers: Dict[str, "Receiver"] = {}
-        self._video_frames: Dict[str, "VideoRecvFrame"] = {}
+        self._video_frames: Dict[str, "VideoFrameSync"] = {}
         self._lock = threading.RLock()
         self._last_refresh = 0.0
 
@@ -166,7 +166,12 @@ class NDIService:
                     real_ids.add(sid)
                     with self._lock:
                         if sid not in self._sources:
-                            self._sources[sid] = SourceInfo(id=sid, name=name, is_demo=False)
+                            self._sources[sid] = SourceInfo(
+                                id=sid, name=name, is_demo=False, connected=True
+                            )
+                        else:
+                            # Discovered = available on the network
+                            self._sources[sid].connected = True
             except Exception:
                 pass
 
@@ -221,8 +226,8 @@ class NDIService:
                     color_format=RecvColorFormat.RGBX_RGBA,
                     bandwidth=RecvBandwidth.highest,
                 )
-                video_frame = VideoRecvFrame()
-                recv.set_video_frame(video_frame)
+                video_frame = VideoFrameSync()
+                recv.frame_sync.set_video_frame(video_frame)
                 recv.set_source(src_obj)
                 self._receivers[info.id] = recv
                 self._video_frames[info.id] = video_frame
@@ -238,27 +243,32 @@ class NDIService:
         if video_frame is None:
             return None
         try:
-            got = recv.receive(video=True, audio=False, metadata=False, timeout_ms=200)
-            if not got or not recv.has_video_frame():
-                return None
+            # FrameSync: capture_video() always fills video_frame with the
+            # latest frame (buffered by the NDI runtime). It does not block
+            # waiting for new data — we pace the loop from the caller.
+            recv.frame_sync.capture_video()
             w, h = video_frame.get_resolution()
             if w <= 0 or h <= 0:
                 return None
-            data = np.array(video_frame.current_frame_data, copy=False)
-            # RGBX -> RGB
+            arr = np.asarray(video_frame.get_array(), dtype=np.uint8, copy=False)
             try:
-                arr = data.reshape(h, w, 4)[:, :, :3].astype(np.uint8, copy=False)
+                arr = arr.reshape(h, w, 4)[:, :, :3]
             except Exception:
-                return None
+                # Some sources may return a flat buffer differently strided
+                total = arr.size
+                if total == h * w * 4:
+                    arr = arr.reshape(h, w, 4)[:, :, :3]
+                else:
+                    return None
             img = Image.fromarray(arr, "RGB")
             info.width, info.height = w, h
             info.connected = True
-            buf = io.BytesIO()
-            # Downscale huge frames for browser
+            # Downscale large frames for browser efficiency
             if w > 960:
                 new_w = 960
                 new_h = int(h * new_w / w)
                 img = img.resize((new_w, new_h), Image.BILINEAR)
+            buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=70)
             return buf.getvalue()
         except Exception:
@@ -272,7 +282,6 @@ class NDIService:
         boundary = b"--frame"
         target_fps = 25
         frame_interval = 1.0 / target_fps
-        last = 0.0
         # For FPS metric
         frame_times: List[float] = []
 
@@ -293,7 +302,6 @@ class NDIService:
                 if jpeg is None:
                     # send a placeholder "no signal" frame
                     jpeg = _no_signal_jpeg(info.name)
-                    info.connected = False
 
                 now = time.time()
                 frame_times.append(now)
@@ -310,13 +318,13 @@ class NDIService:
                     jpeg
                 )
 
-                # pace demo streams
-                if info.is_demo:
-                    elapsed = time.time() - start
-                    sleep_for = frame_interval - elapsed
-                    if sleep_for > 0:
-                        time.sleep(sleep_for)
-                last = now
+                # Pace the loop for both demo and real NDI sources so we
+                # never spin at hundreds of FPS when the source hasn't
+                # produced a fresh frame yet.
+                elapsed = time.time() - start
+                sleep_for = frame_interval - elapsed
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
         except (GeneratorExit, ConnectionResetError):
             return
         except Exception:
